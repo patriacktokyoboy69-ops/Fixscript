@@ -32,7 +32,7 @@ local RANDOM_WORLDS = {
 -- ⚙️ การตั้งค่า
 local SELL_THRESHOLD = 10000  -- จำนวนไอเทมที่จะขาย
 local autoFarm = true
-local flySpeed = 280
+local flySpeed = 190
 local attackDelay = 0.3
 local scanRange = 150
 
