@@ -1,0 +1,1303 @@
+----------------------------------------------------------------
+-- 🛡️ ระบบป้องกันการรัน Script ซ้ำ
+----------------------------------------------------------------
+if _G.FARM_SCRIPT_RUNNING then
+    warn("⚠️ Script กำลังทำงานอยู่แล้ว! ไม่สามารถรันซ้ำได้")
+    warn("⚠️ ถ้าต้องการรีสตาร์ท กรุณารีจอยน์เกมก่อน")
+    return
+end
+
+_G.FARM_SCRIPT_RUNNING = true
+print("✅ เริ่มต้น Script - ป้องกันการรันซ้ำ")
+
+-- ลด wait time จาก 20 เหลือ 3 วินาที
+print("⏳ รอ 3 วินาทีก่อนเริ่มงาน...")
+wait(1)
+
+pcall(function()
+    local mobRemote = game:GetService("ReplicatedStorage"):FindFirstChild("Remotes")
+    if mobRemote then
+        local target = mobRemote:FindFirstChild("MobDamageRemote")
+        if target then
+            target:Destroy()
+            print("✅ ลบ MobDamageRemote สำเร็จ")
+        end
+    end
+end)
+
+local Player = game.Players.LocalPlayer
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local HttpService = game:GetService("HttpService")
+
+-- ⚙️ ไอดีโลก
+local FARM_WORLD = 125804922932357  -- ใส่ PlaceId ของโลกฟาร์ม
+local SELL_WORLD = 3475397644       -- ใส่ PlaceId ของโลกขาย
+
+-- โลกสุ่มสำหรับหนีผู้เล่น
+local RANDOM_WORLDS = {
+    3475419198, 3475422608, 3487210751,
+    3623549100, 3737848045, 3752680052,
+    4174118306, 4728805070
+}
+
+local NO_GO_ZONES = {
+    {position = Vector3.new(-320.14263916015625, 88.54524230957031, -752.4129638671875), radius = 50},
+    {position = Vector3.new(-394.253662109375, 867.26513671875, -5312.3798828125), radius = 50},
+    {position = Vector3.new(1003.189453125, 308.4173583984375, 741.0112915039062), radius = 50},
+    {position = Vector3.new(-2724.1591796875, 452.9313659667969, -988.661865234375), radius = 50},
+}
+
+-- ⚙️ การตั้งค่า
+local SELL_THRESHOLD = 10000
+local autoFarm = true
+local flySpeed = 350
+local attackDelay = 0.3
+local scanRange = 150
+
+-- ⚙️ การตั้งค่าระบบตรวจจับการติดค้าง
+local STUCK_CHECK_INTERVAL = 15
+local STUCK_DISTANCE_THRESHOLD = 5
+local MAX_STUCK_COUNT = 3
+
+local itemNames = {
+    "SpiritwoodResourcesModel",
+    "LimestoneResourcesModel", 
+    "MistCrystalResourcesModel"
+}
+
+-- ตำแหน่งลาดตระเวน
+local checkPositions = {
+    Vector3.new(-266, 467, -394), Vector3.new(1757, 783, 672),
+    Vector3.new(1420, 319, -1409), Vector3.new(1922, 620, -2566),
+    Vector3.new(2226, 585, -4128), Vector3.new(330, 901, -4304),
+    Vector3.new(-1433, 779, -4717), Vector3.new(-3031, 780, -4211),
+    Vector3.new(-2643, 547, -2250), Vector3.new(-857, 401, -2132),
+    Vector3.new(-828, 688, -3444), Vector3.new(-1819, 405, 170),
+}
+
+local currentPatrolIndex = 1
+local noclipConnection
+
+-- ตัวแปร
+local LocalPlayer = Player
+local Character = nil
+local HRP = nil
+
+-- ตัวแปรสำหรับระบบตรวจจับการติดค้าง
+local lastPosition = nil
+local stuckCount = 0
+local farmLoopActive = false
+local farmCoroutine = nil
+
+----------------------------------------------------------------
+-- 🛡️ ระบบ Anti-AFK (ปรับปรุงใหม่ - ขยับทุก 5 วิ)
+----------------------------------------------------------------
+local antiAFKEnabled = true
+local lastActionTime = tick()
+
+local function setupAntiAFK()
+    print("🛡️ เปิดใช้งานระบบ Anti-AFK")
+    
+    -- วิธีที่ 1: จับ Idled Event
+    task.spawn(function()
+        pcall(function()
+            local vu = game:GetService("VirtualUser")
+            Player.Idled:Connect(function()
+                if antiAFKEnabled and _G.FARM_SCRIPT_RUNNING then
+                    vu:CaptureController()
+                    vu:ClickButton2(Vector2.new())
+                    print("🛡️ Anti-AFK: ป้องกัน Idle Kick")
+                end
+            end)
+        end)
+    end)
+    
+    -- วิธีที่ 2: ขยับตัวละครทุก 5 วินาที (หลัก)
+    task.spawn(function()
+        while antiAFKEnabled and _G.FARM_SCRIPT_RUNNING do
+            task.wait(5) -- ทุก 5 วินาที
+            
+            pcall(function()
+                local char = Player.Character
+                if char then
+                    local hrp = char:FindFirstChild("HumanoidRootPart")
+                    local humanoid = char:FindFirstChildOfClass("Humanoid")
+                    
+                    if hrp and humanoid then
+                        -- สุ่มวิธีขยับ
+                        local method = math.random(1, 3)
+                        
+                        if method == 1 then
+                            -- วิธี 1: ขยับ HRP เล็กน้อย
+                            local randomOffset = Vector3.new(
+                                math.random(-3, 3) * 0.5,
+                                0,
+                                math.random(-3, 3) * 0.5
+                            )
+                            hrp.CFrame = hrp.CFrame * CFrame.new(randomOffset)
+                            
+                        elseif method == 2 then
+                            -- วิธี 2: หมุนตัว
+                            local randomAngle = math.rad(math.random(-45, 45))
+                            hrp.CFrame = hrp.CFrame * CFrame.Angles(0, randomAngle, 0)
+                            
+                        else
+                            -- วิธี 3: กระโดด
+                            if humanoid.FloorMaterial ~= Enum.Material.Air then
+                                humanoid.Jump = true
+                            end
+                        end
+                        
+                        lastActionTime = tick()
+                    end
+                end
+            end)
+        end
+    end)
+    
+    -- วิธีที่ 3: กดปุ่มสุ่มทุก 30 วินาที
+    task.spawn(function()
+        while antiAFKEnabled and _G.FARM_SCRIPT_RUNNING do
+            task.wait(30)
+            
+            pcall(function()
+                local vim = game:GetService("VirtualInputManager")
+                local keys = {
+                    Enum.KeyCode.W,
+                    Enum.KeyCode.A,
+                    Enum.KeyCode.S,
+                    Enum.KeyCode.D
+                }
+                
+                local randomKey = keys[math.random(1, #keys)]
+                
+                -- กดปุ่ม
+                vim:SendKeyEvent(true, randomKey, false, game)
+                task.wait(0.1)
+                vim:SendKeyEvent(false, randomKey, false, game)
+                
+                lastActionTime = tick()
+            end)
+        end
+    end)
+    
+    -- วิธีที่ 4: คลิกเมาส์สุ่มทุก 60 วินาที
+    task.spawn(function()
+        while antiAFKEnabled and _G.FARM_SCRIPT_RUNNING do
+            task.wait(60)
+            
+            pcall(function()
+                local vu = game:GetService("VirtualUser")
+                local randomPos = Vector2.new(math.random(1, 100), math.random(1, 100))
+                
+                vu:Button1Down(randomPos)
+                task.wait(0.05)
+                vu:Button1Up(randomPos)
+                
+                lastActionTime = tick()
+            end)
+        end
+    end)
+    
+    -- วิธีที่ 5: เคลื่อนกล้องทุก 15 วินาที
+    task.spawn(function()
+        while antiAFKEnabled and _G.FARM_SCRIPT_RUNNING do
+            task.wait(15)
+            
+            pcall(function()
+                local camera = workspace.CurrentCamera
+                if camera then
+                    -- หมุนกล้องเล็กน้อย
+                    local currentCF = camera.CFrame
+                    local randomAngle = math.rad(math.random(-10, 10))
+                    camera.CFrame = currentCF * CFrame.Angles(0, randomAngle, 0)
+                    
+                    task.wait(0.1)
+                    
+                    -- กลับมาปกติ
+                    camera.CFrame = currentCF
+                    
+                    lastActionTime = tick()
+                end
+            end)
+        end
+    end)
+    
+    print("✅ ระบบ Anti-AFK พร้อม (5 วิธีป้องกัน)")
+    print("   🔄 ขยับตัวละครทุก 5 วิ")
+    print("   ⌨️ กดปุ่มทุก 30 วิ")
+    print("   🖱️ คลิกเมาส์ทุก 60 วิ")
+    print("   📹 เคลื่อนกล้องทุก 15 วิ")
+end
+
+local function updateLastAction()
+    lastActionTime = tick()
+end
+
+local function isInNoGoZone(pos)
+    for _, zone in ipairs(NO_GO_ZONES) do
+        if (pos - zone.position).Magnitude <= zone.radius then
+            return true
+        end
+    end
+    return false
+end
+
+local function setNoclip(state)
+    if state then
+        if noclipConnection then return end
+
+        noclipConnection = RunService.Stepped:Connect(function()
+            pcall(function()
+                local char = LocalPlayer.Character
+                if char then
+                    for _, part in ipairs(char:GetDescendants()) do
+                        if part:IsA("BasePart") then
+                            part.CanCollide = false
+                        end
+                    end
+                end
+            end)
+        end)
+    else
+        if noclipConnection then
+            noclipConnection:Disconnect()
+            noclipConnection = nil
+        end
+
+        pcall(function()
+            local char = LocalPlayer.Character
+            if char then
+                for _, part in ipairs(char:GetDescendants()) do
+                    if part:IsA("BasePart") then
+                        part.CanCollide = true
+                    end
+                end
+            end
+        end)
+    end
+end
+
+----------------------------------------------------------------
+-- ระบบตรวจจับการติดค้าง
+----------------------------------------------------------------
+local function restartFarmSystem()
+    warn("🔄 กำลังรีสตาร์ทระบบฟาร์ม...")
+    
+    if farmCoroutine then
+        pcall(function()
+            coroutine.close(farmCoroutine)
+        end)
+        farmCoroutine = nil
+    end
+    
+    farmLoopActive = false
+    task.wait(2)
+    
+    stuckCount = 0
+    lastPosition = nil
+    currentPatrolIndex = 1
+    
+    warn("🔄 รีสตาร์ทเสร็จ - เริ่มใหม่...")
+    task.wait(1)
+    startFarm()
+end
+
+local function startStuckDetection()
+    print("🔍 เริ่มระบบตรวจจับการติดค้าง")
+    
+    task.spawn(function()
+        while autoFarm and _G.FARM_SCRIPT_RUNNING do
+            task.wait(STUCK_CHECK_INTERVAL)
+            
+            if game.PlaceId ~= FARM_WORLD then
+                continue
+            end
+            
+            if not farmLoopActive then
+                continue
+            end
+            
+            pcall(function()
+                local char = Player.Character
+                if not char then return end
+                
+                local hrp = char:FindFirstChild("HumanoidRootPart")
+                if not hrp then return end
+                
+                local currentPos = hrp.Position
+                
+                if lastPosition then
+                    local distance = (currentPos - lastPosition).Magnitude
+                    
+                    print(string.format("📍 เคลื่อนที่: %.2f studs", distance))
+                    
+                    if distance < STUCK_DISTANCE_THRESHOLD then
+                        stuckCount = stuckCount + 1
+                        warn(string.format("⚠️ ติดค้าง! (%d/%d)", stuckCount, MAX_STUCK_COUNT))
+                        
+                        if stuckCount >= MAX_STUCK_COUNT then
+                            warn("🚨 รีสตาร์ทระบบ...")
+                            restartFarmSystem()
+                            task.wait(30)
+                        end
+                    else
+                        if stuckCount > 0 then
+                            print("✅ เคลื่อนที่ปกติ - รีเซ็ต")
+                            stuckCount = 0
+                        end
+                    end
+                end
+                
+                lastPosition = currentPos
+            end)
+        end
+    end)
+end
+
+----------------------------------------------------------------
+-- ระบบ GUI
+----------------------------------------------------------------
+local function createGUI()
+    pcall(function()
+        if game.CoreGui:FindFirstChild("FarmGUI") then
+            game.CoreGui.FarmGUI:Destroy()
+        end
+    end)
+    
+    local success = pcall(function()
+        local screenGui = Instance.new("ScreenGui")
+        screenGui.Name = "FarmGUI"
+        screenGui.ResetOnSpawn = false
+        screenGui.IgnoreGuiInset = true
+        screenGui.Parent = game.CoreGui
+        
+        -- 💰 แสดงเงิน
+        local coinLabel = Instance.new("TextLabel")
+        coinLabel.Name = "CoinLabel"
+        coinLabel.Size = UDim2.new(0, 250, 0, 60)
+        coinLabel.Position = UDim2.new(0.5, -125, 0.05, 0)
+        coinLabel.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+        coinLabel.BackgroundTransparency = 0.3
+        coinLabel.BorderSizePixel = 0
+        coinLabel.TextColor3 = Color3.fromRGB(255, 223, 0)
+        coinLabel.TextStrokeTransparency = 0.5
+        coinLabel.TextScaled = true
+        coinLabel.Font = Enum.Font.GothamBold
+        coinLabel.Text = "💰 Loading..."
+        coinLabel.Parent = screenGui
+        
+        local coinCorner = Instance.new("UICorner")
+        coinCorner.CornerRadius = UDim.new(0, 12)
+        coinCorner.Parent = coinLabel
+        
+        -- 📦 แสดงไอเทม
+        local itemFrame = Instance.new("Frame")
+        itemFrame.Name = "ItemFrame"
+        itemFrame.Size = UDim2.new(0, 280, 0, 150)
+        itemFrame.Position = UDim2.new(0.5, -140, 0.15, 0)
+        itemFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+        itemFrame.BackgroundTransparency = 0.3
+        itemFrame.BorderSizePixel = 0
+        itemFrame.Parent = screenGui
+        
+        local frameCorner = Instance.new("UICorner")
+        frameCorner.CornerRadius = UDim.new(0, 12)
+        frameCorner.Parent = itemFrame
+        
+        local resources = {
+            {name = "Spiritwood", icon = "🪵", color = Color3.fromRGB(139, 90, 43)},
+            {name = "Limestone", icon = "🪨", color = Color3.fromRGB(200, 200, 200)},
+            {name = "MistCrystal", icon = "💎", color = Color3.fromRGB(100, 200, 255)}
+        }
+        
+        for i, resource in ipairs(resources) do
+            local label = Instance.new("TextLabel")
+            label.Name = resource.name .. "Label"
+            label.Size = UDim2.new(1, -20, 0, 40)
+            label.Position = UDim2.new(0, 10, 0, (i-1) * 45 + 10)
+            label.BackgroundTransparency = 1
+            label.TextColor3 = resource.color
+            label.TextStrokeTransparency = 0.5
+            label.TextScaled = true
+            label.Font = Enum.Font.GothamBold
+            label.TextXAlignment = Enum.TextXAlignment.Left
+            label.Text = resource.icon .. " Loading..."
+            label.Parent = itemFrame
+        end
+        
+        -- แสดงสถานะ
+        local statusLabel = Instance.new("TextLabel")
+        statusLabel.Name = "StatusLabel"
+        statusLabel.Size = UDim2.new(0, 280, 0, 50)
+        statusLabel.Position = UDim2.new(0.5, -140, 0.32, 0)
+        statusLabel.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+        statusLabel.BackgroundTransparency = 0.3
+        statusLabel.BorderSizePixel = 0
+        statusLabel.TextColor3 = Color3.fromRGB(0, 255, 127)
+        statusLabel.TextStrokeTransparency = 0.5
+        statusLabel.TextScaled = true
+        statusLabel.Font = Enum.Font.GothamBold
+        statusLabel.Text = "✅ ระบบทำงานปกติ"
+        statusLabel.Parent = screenGui
+        
+        local statusCorner = Instance.new("UICorner")
+        statusCorner.CornerRadius = UDim.new(0, 12)
+        statusCorner.Parent = statusLabel
+        
+        -- อัพเดทสถานะ
+        task.spawn(function()
+            while task.wait(1) and _G.FARM_SCRIPT_RUNNING do
+                pcall(function()
+                    if stuckCount > 0 then
+                        statusLabel.TextColor3 = Color3.fromRGB(255, 165, 0)
+                        statusLabel.Text = string.format("⚠️ ติดค้าง: %d/%d", stuckCount, MAX_STUCK_COUNT)
+                    else
+                        statusLabel.TextColor3 = Color3.fromRGB(0, 255, 127)
+                        statusLabel.Text = "✅ ทำงานปกติ"
+                    end
+                end)
+            end
+        end)
+        
+        -- อัพเดทเงิน
+        task.spawn(function()
+            task.wait(2) -- รอโหลด
+            pcall(function()
+                local coinsValue = Player:WaitForChild("Data", 10):WaitForChild("Currency", 10):WaitForChild("Coins", 10)
+                local lastCoins = coinsValue.Value
+                
+                while task.wait(0.5) and _G.FARM_SCRIPT_RUNNING do
+                    local current = coinsValue.Value
+                    local diff = current - lastCoins
+                    
+                    if diff > 0 then
+                        coinLabel.TextColor3 = Color3.fromRGB(0, 255, 127)
+                    elseif diff < 0 then
+                        coinLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
+                    else
+                        coinLabel.TextColor3 = Color3.fromRGB(255, 223, 0)
+                    end
+                    
+                    coinLabel.Text = string.format("💰 %s", tostring(current))
+                    lastCoins = current
+                end
+            end)
+        end)
+        
+        -- อัพเดทไอเทม
+        task.spawn(function()
+            task.wait(2) -- รอโหลด
+            pcall(function()
+                local resourcesData = Player:WaitForChild("Data", 10):WaitForChild("Resources", 10)
+                
+                while task.wait(0.5) and _G.FARM_SCRIPT_RUNNING do
+                    for i, resource in ipairs(resources) do
+                        local val = resourcesData:FindFirstChild(resource.name)
+                        if val then
+                            local label = itemFrame:FindFirstChild(resource.name .. "Label")
+                            if label then
+                                label.Text = string.format("%s %s: %d", resource.icon, resource.name, val.Value)
+                                
+                                if val.Value >= SELL_THRESHOLD * 0.8 then
+                                    label.TextColor3 = Color3.fromRGB(255, 165, 0)
+                                elseif val.Value >= SELL_THRESHOLD then
+                                    label.TextColor3 = Color3.fromRGB(255, 80, 80)
+                                else
+                                    label.TextColor3 = resource.color
+                                end
+                            end
+                        end
+                    end
+                end
+            end)
+        end)
+        
+        print("✅ สร้าง GUI สำเร็จ")
+    end)
+    
+    if not success then
+        warn("⚠️ ไม่สามารถสร้าง GUI")
+    end
+end
+
+----------------------------------------------------------------
+-- ระบบขาย/วาร์ป
+----------------------------------------------------------------
+local function sellAllItems()
+    print("💰 เริ่มขายไอเทม...")
+    
+    pcall(function()
+        local resources = Player:WaitForChild("Data", 10):WaitForChild("Resources", 10)
+        local itemsToSell = {"Spiritwood", "Limestone", "MistCrystal"}
+        
+        for _, item in ipairs(itemsToSell) do
+            local val = resources:FindFirstChild(item)
+            if val and val.Value > 0 then
+                pcall(function()
+                    local args = {{ItemName = item, Amount = val.Value}}
+                    ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("SellItemRemote"):FireServer(unpack(args))
+                    print("✅ ขาย " .. item .. ": " .. val.Value)
+                end)
+                task.wait(0.5)
+            end
+        end
+    end)
+    
+    print("💰 ขายเสร็จสิ้น!")
+end
+
+local function checkInventoryForSell()
+    local result = false
+    pcall(function()
+        local resources = Player:WaitForChild("Data", 5):WaitForChild("Resources", 5)
+        local spirit = resources:FindFirstChild("Spiritwood") and resources.Spiritwood.Value or 0
+        local lime = resources:FindFirstChild("Limestone") and resources.Limestone.Value or 0
+        local crystal = resources:FindFirstChild("MistCrystal") and resources.MistCrystal.Value or 0
+        
+        result = spirit >= SELL_THRESHOLD or lime >= SELL_THRESHOLD or crystal >= SELL_THRESHOLD
+    end)
+    return result
+end
+
+local function teleportToWorld(placeId)
+    print("🌍 วาร์ปไป:", placeId)
+    pcall(function()
+        ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("WorldTeleportRemote"):InvokeServer(placeId, {})
+    end)
+end
+
+local function teleportToRandomWorld()
+    local randomWorld = RANDOM_WORLDS[math.random(1, #RANDOM_WORLDS)]
+    print("🎲 สุ่มวาร์ป:", randomWorld)
+    teleportToWorld(randomWorld)
+end
+
+----------------------------------------------------------------
+-- ระบบหนีผู้เล่น (แก้ไขใหม่: วาร์ปเฉพาะเมื่อเกิน 3 คน)
+----------------------------------------------------------------
+local MAX_PLAYERS_ALLOWED = 3  -- จำนวนผู้เล่นสูงสุดที่ยอมรับได้ (รวมเรา)
+
+local function startPlayerMonitor()
+    task.spawn(function()
+        while autoFarm and _G.FARM_SCRIPT_RUNNING do
+            task.wait(1)
+            
+            local playerCount = #Players:GetPlayers()
+            
+            -- แสดงจำนวนผู้เล่นปัจจุบัน (แต่ไม่ spam)
+            if playerCount > 1 then
+                -- มีผู้เล่นอื่น
+                if playerCount <= MAX_PLAYERS_ALLOWED then
+                    -- ไม่เกิน 3 คน - ปลอดภัย
+                    print("👥 ผู้เล่น: " .. playerCount .. "/" .. MAX_PLAYERS_ALLOWED .. " - ปลอดภัย ✅")
+                else
+                    -- เกิน 3 คน - วาร์ปหนี!
+                    warn("⚠️ ผู้เล่นเกิน! พบ " .. playerCount .. " คน")
+                    warn("👥 จำนวนเกินกำหนด (>" .. MAX_PLAYERS_ALLOWED .. " คน)")
+                    
+                    -- แสดงรายชื่อผู้เล่น
+                    for _, otherPlayer in pairs(Players:GetPlayers()) do
+                        if otherPlayer ~= Player then
+                            print("   🧑 " .. otherPlayer.Name)
+                        end
+                    end
+                    
+                    warn("🏃 เตรียมวาร์ป...")
+                    
+                    -- 🆕 บินไปมาก่อนวาร์ป (ไม่ให้น่าสงสัย)
+                    pcall(function()
+                        local char = Player.Character
+                        if char then
+                            local hrp = char:FindFirstChild("HumanoidRootPart")
+                            if hrp then
+                                local currentPos = hrp.Position
+                                
+                                -- บินไปทิศทางสุ่ม 3-5 ครั้ง
+                                local moveCount = math.random(3, 5)
+                                print("🔄 บินไปมา " .. moveCount .. " ครั้งก่อนวาร์ป...")
+                                
+                                for i = 1, moveCount do
+                                    -- สุ่มตำแหน่งใกล้ๆ
+                                    local randomOffset = Vector3.new(
+                                        math.random(-100, 100),
+                                        math.random(-20, 20),
+                                        math.random(-100, 100)
+                                    )
+                                    
+                                    local targetPos = currentPos + randomOffset
+                                    
+                                    print("   ✈️ บินครั้งที่ " .. i)
+                                    flyToPosition(targetPos, flySpeed)
+                                    
+                                    -- รอสุ่ม 1-2 วิ
+                                    task.wait(math.random(1, 2))
+                                    
+                                    -- อัพเดทตำแหน่งปัจจุบัน
+                                    if hrp then
+                                        currentPos = hrp.Position
+                                    end
+                                end
+                                
+                                print("✅ เคลื่อนไหวเสร็จ - เริ่มวาร์ป!")
+                            end
+                        end
+                    end)
+                    
+                    task.wait(2)
+                    teleportToRandomWorld()
+                    task.wait(10)
+                end
+            else
+                -- เรา 1 คนเดียว
+                print("👤 ผู้เล่น: 1 คน (เราคนเดียว) ✅")
+            end
+            
+            -- ลด spam - รอ 10 วิก่อนเช็คใหม่
+            task.wait(10)
+        end
+    end)
+end
+
+----------------------------------------------------------------
+-- ระบบเช็คโลก
+----------------------------------------------------------------
+local function startWorldChecker()
+    task.spawn(function()
+        while autoFarm and _G.FARM_SCRIPT_RUNNING do
+            task.wait(2)
+            
+            local currentPlace = game.PlaceId
+            
+            if currentPlace == FARM_WORLD then
+                if checkInventoryForSell() then
+                    print("📦 ไอเทมเต็ม!")
+                    print("💰 วาร์ปขาย...")
+                    task.wait(2)
+                    teleportToWorld(SELL_WORLD)
+                    task.wait(10)
+                end
+            elseif currentPlace == SELL_WORLD then
+                print("💰 ขายของ...")
+                task.wait(2)
+                sellAllItems()
+                task.wait(3)
+                print("🔄 กลับฟาร์ม...")
+                teleportToWorld(FARM_WORLD)
+                task.wait(10)
+            else
+                warn("🚫 นอกโลก!")
+                warn("📍 PlaceId: " .. currentPlace)
+                warn("🔄 กลับฟาร์ม...")
+                task.wait(2)
+                teleportToWorld(FARM_WORLD)
+                task.wait(10)
+            end
+        end
+    end)
+end
+
+----------------------------------------------------------------
+-- แสดงสถานะ
+----------------------------------------------------------------
+local function showStatus()
+    task.spawn(function()
+        while autoFarm and _G.FARM_SCRIPT_RUNNING do
+            task.wait(10)
+            
+            pcall(function()
+                local currentPlace = game.PlaceId
+                local playerCount = #Players:GetPlayers()
+                local resources = Player:WaitForChild("Data", 5):WaitForChild("Resources", 5)
+                
+                local spirit = resources:FindFirstChild("Spiritwood") and resources.Spiritwood.Value or 0
+                local lime = resources:FindFirstChild("Limestone") and resources.Limestone.Value or 0
+                local crystal = resources:FindFirstChild("MistCrystal") and resources.MistCrystal.Value or 0
+                
+                print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                print("📊 สถานะ:")
+                print("   🌍 โลก: " .. currentPlace)
+                print("   👥 ผู้เล่น: " .. playerCount)
+                print("   🪵 Spiritwood: " .. spirit)
+                print("   🪨 Limestone: " .. lime)
+                print("   💎 MistCrystal: " .. crystal)
+                print("   🔍 ติดค้าง: " .. stuckCount .. "/" .. MAX_STUCK_COUNT)
+                print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            end)
+        end
+    end)
+end
+
+----------------------------------------------------------------
+-- ระบบเก็บไอเทม
+----------------------------------------------------------------
+local function TouchFoodModel(model)
+    if not model or not model:IsA("Model") then return false end
+    
+    local handle = model:FindFirstChild("Handle")
+    if not handle or not handle:FindFirstChildOfClass("TouchTransmitter") then return false end
+    
+    local hrp = Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+    
+    pcall(function()
+        firetouchinterest(handle, hrp, 0)
+        task.wait(0.05)
+        firetouchinterest(handle, hrp, 1)
+    end)
+    
+    return true
+end
+
+local function getAllDroppedItems()
+    local items = {}
+    local hrp = Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return items end
+    
+    local function scan(parent)
+        if not parent then return end
+        pcall(function()
+            for _, obj in pairs(parent:GetChildren()) do
+                if table.find(itemNames, obj.Name) then
+                    local pos = nil
+                    if obj:IsA("BasePart") then
+                        pos = obj.Position
+                    elseif obj:IsA("Model") and obj.PrimaryPart then
+                        pos = obj.PrimaryPart.Position
+                    end
+                    
+                    if pos and (pos - hrp.Position).Magnitude <= scanRange then
+                        table.insert(items, {instance = obj, pos = pos, distance = (pos - hrp.Position).Magnitude})
+                    end
+                end
+            end
+        end)
+    end
+    
+    scan(workspace)
+    scan(workspace:FindFirstChild("Camera"))
+    
+    table.sort(items, function(a, b) return a.distance < b.distance end)
+    return items
+end
+
+local function collectAllItems()
+    print("🧲 เก็บไอเทม...")
+    local collectedCount = 0
+    local maxAttempts = 10
+    local attempts = 0
+    
+    updateLastAction()
+    
+    while attempts < maxAttempts and autoFarm and _G.FARM_SCRIPT_RUNNING do
+        local items = getAllDroppedItems()
+        
+        if #items == 0 then
+            print("✅ ไม่มีไอเทม")
+            break
+        end
+        
+        print("🔍 พบ " .. #items .. " ชิ้น")
+        
+        for _, itemData in ipairs(items) do
+            if itemData.instance and itemData.instance.Parent then
+                TouchFoodModel(itemData.instance)
+                task.wait(0.1)
+                collectedCount = collectedCount + 1
+            end
+        end
+        
+        attempts = attempts + 1
+        task.wait(0.5)
+    end
+    
+    if collectedCount > 0 then
+        print("✨ เก็บเสร็จ: " .. collectedCount .. " ครั้ง")
+        updateLastAction()
+    end
+end
+
+----------------------------------------------------------------
+-- ระบบหามังกร
+----------------------------------------------------------------
+function GetMountedDragon()
+    local char = Player.Character
+    if not char then return nil end
+    
+    local Dragons = char:FindFirstChild("Dragons")
+    if not Dragons then return nil end
+    
+    for _, dragon in pairs(Dragons:GetChildren()) do
+        local Seat = dragon:FindFirstChildWhichIsA("VehicleSeat") or dragon:FindFirstChild("Seat")
+        if Seat and Seat.Occupant and Seat.Occupant.Parent == char then
+            return dragon
+        end
+    end
+    return nil
+end
+
+function findNearestNode()
+    local nodesFolder = workspace:FindFirstChild("Interactions") 
+        and workspace.Interactions:FindFirstChild("Nodes") 
+        and workspace.Interactions.Nodes:FindFirstChild("Resources")
+    
+    if not nodesFolder then return nil end
+    
+    local nearest = nil
+    local minDist = math.huge
+    local hrp = Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil end
+    
+    for _, node in pairs(nodesFolder:GetChildren()) do
+        local hp = node:FindFirstChild("BillboardPart") 
+            and node.BillboardPart:FindFirstChild("Health")
+        
+        if hp and hp.Value > 0 then
+            local nodePos = node.BillboardPart.Position
+
+            if not isInNoGoZone(nodePos) then
+                local dist = (nodePos - hrp.Position).Magnitude
+
+                if dist < minDist then
+                    minDist = dist
+                    nearest = node.BillboardPart
+                end
+            end
+        end
+    end
+    
+    return nearest
+end
+
+----------------------------------------------------------------
+-- ระบบบิน
+----------------------------------------------------------------
+function flyToPosition(targetPos, speed)
+    speed = speed or flySpeed
+    updateLastAction()
+
+    Character = Player.Character
+    HRP = Character and Character:FindFirstChild("HumanoidRootPart")
+
+    if not Character or not HRP then
+        warn("❌ ไม่พบตัวละคร")
+        return false
+    end
+
+    setNoclip(true)
+
+    local startTime = tick()
+    local maxTime = (targetPos - HRP.Position).Magnitude / speed + 5
+    local connection
+
+    local function stopFlying()
+        if connection then
+            connection:Disconnect()
+            connection = nil
+        end
+        setNoclip(false)
+    end
+
+    connection = RunService.Heartbeat:Connect(function(deltaTime)
+        if not HRP or not HRP.Parent then
+            stopFlying()
+            return
+        end
+
+        local currentPos = HRP.Position
+        local distanceToTarget = (targetPos - currentPos).Magnitude
+
+        if distanceToTarget <= 8 then
+            stopFlying()
+            return
+        end
+
+        if tick() - startTime > maxTime then
+            stopFlying()
+            return
+        end
+
+        local direction = (targetPos - currentPos).Unit
+        local moveDistance = speed * deltaTime
+        local newPos = currentPos + (direction * moveDistance)
+
+        HRP.CFrame = CFrame.lookAt(newPos, targetPos)
+        HRP.Velocity = Vector3.zero
+        HRP.AssemblyLinearVelocity = Vector3.zero
+    end)
+
+    repeat
+        task.wait()
+    until not connection or (HRP.Position - targetPos).Magnitude <= 8
+
+    stopFlying()
+    updateLastAction()
+    task.wait(0.2)
+    return true
+end
+
+----------------------------------------------------------------
+-- ระบบฟาร์ม (ปรับปรุงให้ไม่ค้าง)
+----------------------------------------------------------------
+function startFarm()
+    print("🚀 เริ่มฟาร์ม!")
+    
+    if farmCoroutine then
+        pcall(function()
+            coroutine.close(farmCoroutine)
+        end)
+    end
+    
+    farmLoopActive = true
+    
+    farmCoroutine = task.spawn(function()
+        print("✅ Loop เริ่มทำงาน")
+        
+        while autoFarm and farmLoopActive and _G.FARM_SCRIPT_RUNNING do
+            pcall(function()
+                -- เช็คโลก
+                if game.PlaceId ~= FARM_WORLD then
+                    warn("⚠️ ไม่ในโลกฟาร์ม")
+                    task.wait(5)
+                    return
+                end
+                
+                local dragon = GetMountedDragon()
+                
+                if not dragon then
+                    warn("⚠️ ไม่พบมังกร!")
+                    task.wait(2)
+                else
+                    local targetNode = findNearestNode()
+                    
+                    if targetNode then
+                        local nodePos = targetNode.Position
+                        
+                        print("🌳 พบต้นไม้!")
+                        print("✈️ บิน...")
+                        flyToPosition(nodePos + Vector3.new(0, 15, 0), flySpeed)
+                        
+                        updateLastAction()
+                        task.wait(0.3)
+                        
+                        print("🔥 โจมตี...")
+                        local attackCount = 0
+                        while targetNode and targetNode:FindFirstChild("Health") 
+                            and targetNode.Health.Value > 0 
+                            and autoFarm and farmLoopActive and _G.FARM_SCRIPT_RUNNING 
+                            and attackCount < 100 do -- ป้องกันค้าง
+                            
+                            if dragon and dragon:FindFirstChild("Remotes") then
+                                local remotes = dragon.Remotes
+                                
+                                pcall(function()
+                                    if remotes:FindFirstChild("BreathFireRemote") then
+                                        remotes.BreathFireRemote:FireServer()
+                                    end
+                                end)
+                                
+                                pcall(function()
+                                    if remotes:FindFirstChild("PlaySoundRemote") then
+                                        local args = {"Breath", "Destructibles", targetNode}
+                                        remotes.PlaySoundRemote:FireServer(unpack(args))
+                                    end
+                                end)
+                            end
+                            
+                            updateLastAction()
+                            attackCount = attackCount + 1
+                            task.wait(attackDelay)
+                        end
+                        
+                        print("✅ ต้นไม้พัง!")
+                        task.wait(1)
+                        collectAllItems()
+                        task.wait(1)
+                        
+                    else
+                        print("🔍 หาต้นไม้...")
+                        local nextPos = checkPositions[currentPatrolIndex]
+
+                        if not isInNoGoZone(nextPos) then
+                            flyToPosition(nextPos, flySpeed + 20)
+                        else
+                            print("🚫 ข้าม zone ห้าม")
+                        end
+
+                        currentPatrolIndex = currentPatrolIndex + 1
+                        if currentPatrolIndex > #checkPositions then
+                            currentPatrolIndex = 1
+                        end
+
+                        task.wait(2)
+                    end
+                end
+            end)
+            
+            task.wait(0.5)
+        end
+        
+        farmLoopActive = false
+        print("⚠️ ฟาร์มหยุด")
+    end)
+    
+    print("✅ startFarm() เสร็จสิ้น")
+end
+
+----------------------------------------------------------------
+-- ระบบมังกร (ปรับปรุง - ไม่ใช้ WaitForChild นาน)
+----------------------------------------------------------------
+local function setupDragonSystem()
+    print("🐉 ตั้งค่ามังกร...")
+    
+    task.spawn(function()
+        pcall(function()
+            -- รอ Character
+            local char = Player.Character
+            if not char then
+                print("⏳ รอ Character...")
+                char = Player.CharacterAdded:Wait()
+                task.wait(2)
+            end
+            
+            local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+            if not remotes then
+                warn("❌ ไม่พบ Remotes")
+                return
+            end
+            
+            -- หา Dragon folder
+            local dragonFolder = nil
+            pcall(function()
+                dragonFolder = workspace:WaitForChild("Characters", 10)
+                    :WaitForChild(Player.Name, 10)
+                    :WaitForChild("Dragons", 10)
+            end)
+            
+            if not dragonFolder then
+                warn("❌ ไม่พบ Dragons folder")
+                return
+            end
+            
+            print("✅ พบ Dragons folder")
+            
+            local function getAutoDragon()
+                local dragons = dragonFolder:GetChildren()
+                if #dragons > 0 then
+                    return dragons[1]
+                end
+                return nil
+            end
+            
+            local function reviveDragon(dragonModel)
+                pcall(function()
+                    local dragonName = dragonModel.Name
+                    local deadFlag = dragonModel:FindFirstChild("Data") 
+                        and dragonModel.Data:FindFirstChild("Dead")
+
+                    if deadFlag and deadFlag.Value == true then
+                        print("💀 ฟื้นมังกร:", dragonName)
+                        local args = { dragonName, "DragonRevivalHeart" }
+                        remotes:FindFirstChild("ReviveDragonRemote"):InvokeServer(unpack(args))
+                        task.wait(1)
+                    end
+                end)
+            end
+            
+            local function ensureMountedDragon()
+                pcall(function()
+                    local dragonModel = getAutoDragon()
+                    if not dragonModel then return end
+                    
+                    local targetName = dragonModel.Name
+                    reviveDragon(dragonModel)
+                    
+                    local humanoid = char:FindFirstChildOfClass("Humanoid")
+                    local currentSeat = humanoid and humanoid.SeatPart
+                    local currentMount = currentSeat and currentSeat:FindFirstAncestorWhichIsA("Model")
+                    
+                    if currentMount and currentMount:IsDescendantOf(dragonFolder) 
+                        and currentMount.Name == targetName then
+                        return
+                    end
+                    
+                    local seat = dragonModel:FindFirstChildWhichIsA("Seat", true)
+                    if seat and humanoid then
+                        seat:Sit(humanoid)
+                        print("🪶 ขี่มังกร:", targetName)
+                        
+                        task.wait(1)
+                        pcall(function()
+                            local flyBtn = Player.PlayerGui
+                                :WaitForChild("HUDGui", 5)
+                                .BottomFrame.CurrentDragonFrame
+                                .DragonControlsFrame.Other:FindFirstChild("Fly")
+                            
+                            if flyBtn and flyBtn:FindFirstChild("MouseButton1Down") then
+                                firesignal(flyBtn.MouseButton1Down)
+                                print("🛫 บิน!")
+                            end
+                        end)
+                    end
+                end)
+            end
+            
+            -- เช็คซ้ำ
+            task.spawn(function()
+                while _G.FARM_SCRIPT_RUNNING do
+                    task.wait(2) -- เช็คทุก 2 วิ
+                    pcall(ensureMountedDragon)
+                end
+            end)
+            
+            Player.CharacterAdded:Connect(function(newChar)
+                task.wait(3)
+                char = newChar
+                pcall(ensureMountedDragon)
+            end)
+            
+            print("✅ ระบบมังกรพร้อม")
+        end)
+    end)
+end
+
+----------------------------------------------------------------
+-- ระบบกด Q
+----------------------------------------------------------------
+local function setupAutoFlyControl()
+    print("⌨️ ตั้งค่าปุ่ม Q...")
+    
+    task.spawn(function()
+        pcall(function()
+            -- ตั้งค่า FlyControlUseSpace
+            task.wait(2)
+            pcall(function()
+                local settings = Player:WaitForChild("Data", 10):WaitForChild("Settings", 10)
+                local flyControl = settings:FindFirstChild("FlyControlUseSpace")
+                if flyControl then
+                    flyControl.Value = false
+                    print("✅ FlyControlUseSpace = false")
+                end
+            end)
+            
+            local function pressQ()
+                pcall(function()
+                    local VIM = game:GetService("VirtualInputManager")
+                    VIM:SendKeyEvent(true, Enum.KeyCode.Q, false, game)
+                    task.wait(0.05)
+                    VIM:SendKeyEvent(false, Enum.KeyCode.Q, false, game)
+                end)
+            end
+            
+            local function getDragonFlying()
+                local result = false
+                pcall(function()
+                    local char = Player.Character
+                    if not char then return end
+                    
+                    local dragons = char:FindFirstChild("Dragons")
+                    if not dragons then return end
+                    
+                    for _, dragon in ipairs(dragons:GetChildren()) do
+                        if dragon:IsA("Model") then
+                            local data = dragon:FindFirstChild("Data")
+                            if data then
+                                local flying = data:FindFirstChild("Flying")
+                                if flying then
+                                    result = flying.Value
+                                    return
+                                end
+                            end
+                        end
+                    end
+                end)
+                return result
+            end
+            
+            -- เริ่มเช็ค
+            task.wait(3)
+            while _G.FARM_SCRIPT_RUNNING do
+                task.wait(0.5)
+                
+                local isFlying = getDragonFlying()
+                
+                if not isFlying then
+                    print("⚠️ มังกรไม่บิน → Q")
+                    pressQ()
+                    task.wait(0.1)
+                    pressQ()
+                end
+            end
+        end)
+    end)
+    
+    print("✅ ระบบ Q พร้อม")
+end
+
+----------------------------------------------------------------
+-- 🎬 เริ่มระบบ (ลำดับที่ถูกต้อง)
+----------------------------------------------------------------
+
+print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+print("🚀 เริ่มต้นระบบ...")
+print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+-- 1. Anti-AFK
+setupAntiAFK()
+
+-- 2. GUI
+createGUI()
+
+-- 3. ระบบมังกร (ทำงานแบบ async)
+setupDragonSystem()
+
+-- 4. ระบบกด Q (ทำงานแบบ async)
+setupAutoFlyControl()
+
+-- 5. ระบบตรวจจับติดค้าง
+startStuckDetection()
+
+-- รอให้ระบบพื้นฐานพร้อม
+print("⏳ รอระบบโหลด 5 วิ...")
+task.wait(5)
+
+-- เช็คโลก
+local currentPlace = game.PlaceId
+print("📍 PlaceId: " .. currentPlace)
+
+if currentPlace == FARM_WORLD then
+    print("✅ อยู่ในโลกฟาร์ม")
+    
+    -- เริ่มระบบทั้งหมด
+    print("🚀 เริ่มฟาร์ม...")
+    startFarm()
+    
+    print("👥 เริ่มเช็คผู้เล่น...")
+    startPlayerMonitor()
+    
+    print("🗺️ เริ่มเช็คโลก...")
+    startWorldChecker()
+    
+    print("📊 เริ่มแสดงสถานะ...")
+    showStatus()
+    
+elseif currentPlace == SELL_WORLD then
+    print("💰 อยู่ในโลกขาย")
+    task.wait(2)
+    sellAllItems()
+    task.wait(3)
+    teleportToWorld(FARM_WORLD)
+    
+else
+    print("🌍 นอกโลก - วาร์ปกลับ")
+    task.wait(2)
+    teleportToWorld(FARM_WORLD)
+end
+
+print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+print("✅ ระบบทำงานแล้ว!")
+print("🔍 ตรวจจับติดค้าง: เปิด")
+print("🛡️ ป้องกันรันซ้ำ: เปิด")
+print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
